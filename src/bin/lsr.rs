@@ -1,16 +1,11 @@
-use std::{
-    path::{Path, PathBuf},
-    process::ExitCode,
-};
-
 use clap::Parser;
 use colored::Colorize;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-const BYTES_IN_KB: u64 = 1024;
-const BYTES_IN_MB: u64 = BYTES_IN_KB * 1024;
-const BYTES_IN_GB: u64 = BYTES_IN_MB * 1024;
-
-const FILE_SIZE_INDENT: usize = 50;
+const BYTES_IN_KB: f64 = 1024.0;
+const BYTES_IN_MB: f64 = BYTES_IN_KB * 1024.0;
+const BYTES_IN_GB: f64 = BYTES_IN_MB * 1024.0;
 
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
@@ -51,16 +46,17 @@ fn get_symbol(i: usize, length: usize, indent: usize) -> &'static str {
 }
 
 fn beautify_bytes(bytes: u64) -> String {
+    let bytes = bytes as f64;
     if bytes < BYTES_IN_KB {
         return format!("{}B", bytes);
     }
     if bytes < BYTES_IN_MB {
-        return format!("{:.2}KB", bytes as f64 / 1024.0);
+        return format!("{:.2}KB", bytes / BYTES_IN_KB);
     }
     if bytes < BYTES_IN_GB {
-        return format!("{:.2}MB", bytes as f64 / 1024.0 / 1024.0);
+        return format!("{:.2}MB", bytes / BYTES_IN_MB);
     }
-    format!("{:.2}GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+    format!("{:.2}GB", bytes / BYTES_IN_GB)
 }
 
 fn lsr(path: &Path, depth: i8, indent: usize, cli: &Cli) -> Result<u64, String> {
@@ -72,23 +68,33 @@ fn lsr(path: &Path, depth: i8, indent: usize, cli: &Cli) -> Result<u64, String> 
         return Ok(0);
     }
 
-    let dir = std::fs::read_dir(path)
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.is_ok())
-        .map(|r| r.unwrap())
-        .filter(|r| {
-            r.path()
-                .file_name()
-                .is_some_and(|name| !name.to_str().is_some_and(|s| s.starts_with(".")))
-                || cli.all
-        });
+    let dir = match std::fs::read_dir(path) {
+        Ok(dir) => dir
+            .into_iter()
+            .filter(|r| r.is_ok())
+            .map(|r| r.unwrap())
+            .filter(|r| {
+                r.path()
+                    .file_name()
+                    .is_some_and(|name| !name.to_str().is_some_and(|s| s.starts_with(".")))
+                    || cli.all
+            })
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            return Err(e.to_string());
+        }
+    };
 
-    let mut total_bytes = 0;
-    let length = path.read_dir().unwrap().count();
-    for (i, entry) in dir.enumerate() {
+    let mut total_bytes: u64 = 0;
+    let length = dir.len();
+    for (i, entry) in dir.iter().enumerate() {
         let path = entry.path();
-        let bytes = path.metadata().unwrap().len();
+        let bytes = match path.metadata() {
+            Ok(m) => m.len(),
+            Err(e) => {
+                return Err(e.to_string());
+            }
+        };
         total_bytes += bytes;
 
         // TODO: Move File/Dir Info to the beginning of each line
@@ -96,19 +102,16 @@ fn lsr(path: &Path, depth: i8, indent: usize, cli: &Cli) -> Result<u64, String> 
         name = format!(
             "{}{} {}",
             " ".repeat(indent * 2),
-            get_symbol(i, length, indent).bright_black(),
+            get_symbol(i, length, indent).dimmed(),
             name
         );
         if path.is_dir() {
-            println!("{}/", name.bold());
-            lsr(&path, depth - 1, indent + 1, cli).unwrap();
+            println!("{}/", if depth == 0 { name.normal() } else { name.dimmed() });
+            if let Err(e) = lsr(&path, depth - 1, indent + 1, cli) {
+                println!("{}{} {}", " ".repeat((indent + 1) * 2), "╰".dimmed(), e);
+            }
         } else {
-            println!(
-                "{}{}{}",
-                name,
-                " ".repeat(FILE_SIZE_INDENT - name.len()),
-                beautify_bytes(bytes)
-            )
+            println!("{}  {}", name, beautify_bytes(bytes))
         }
     }
 
